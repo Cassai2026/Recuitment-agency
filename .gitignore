@@ -1,0 +1,36 @@
+# .gitignore — Dual-Business Hub
+
+# Environment secrets — NEVER commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Generated RAMS documents (runtime output)
+rams/*.md
+
+# Docker
+.docker/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# TLS certificates (mounted at runtime)
+nginx/certs/
