@@ -6,6 +6,9 @@
 -- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- Enable PostGIS for geo-spatial candidate matching (Module 3 — Zero-Lag Matcher)
+CREATE EXTENSION IF NOT EXISTS postgis;
+
 -- =============================================================================
 -- CORE LAYER: Shared enums and audit infrastructure
 -- =============================================================================
@@ -80,6 +83,11 @@ CREATE TABLE candidates (
     night_shift_ready   BOOLEAN     NOT NULL DEFAULT FALSE,
     right_to_work       BOOLEAN     NOT NULL DEFAULT FALSE,
     dbs_check_passed    BOOLEAN     NOT NULL DEFAULT FALSE,
+    -- Geo-spatial location (WGS-84) — used by Module 3 Zero-Lag Matcher
+    location            geometry(Point, 4326),
+    -- Denormalised compliance flag (GREEN/AMBER/RED/PENDING) auto-maintained by trigger
+    compliance_status   TEXT        NOT NULL DEFAULT 'PENDING'
+        CONSTRAINT chk_compliance_status CHECK (compliance_status IN ('GREEN', 'AMBER', 'RED', 'PENDING')),
     -- Metadata
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -90,6 +98,8 @@ CREATE INDEX idx_candidates_email        ON candidates (email);
 CREATE INDEX idx_candidates_cscs_status  ON candidates (cscs_status);
 CREATE INDEX idx_candidates_nrswa_status ON candidates (nrswa_status);
 CREATE INDEX idx_candidates_night_shift  ON candidates (night_shift_ready);
+CREATE INDEX idx_candidates_compliance   ON candidates (compliance_status);
+CREATE INDEX idx_candidates_location     ON candidates USING GIST (location);
 
 CREATE TRIGGER trg_audit_candidates
     AFTER INSERT OR UPDATE OR DELETE ON candidates
@@ -103,6 +113,8 @@ CREATE TABLE jobs (
     client_name     TEXT        NOT NULL,
     location        TEXT        NOT NULL,
     motorway_zone   motorway_zone NOT NULL DEFAULT 'urban',
+    -- Geo-spatial job site point (WGS-84) — used by Module 3 Zero-Lag Matcher
+    job_location    geometry(Point, 4326),
     -- Scheduling
     start_date      DATE,
     end_date        DATE,
@@ -122,6 +134,7 @@ CREATE TABLE jobs (
 CREATE INDEX idx_jobs_motorway_zone ON jobs (motorway_zone);
 CREATE INDEX idx_jobs_is_active     ON jobs (is_active);
 CREATE INDEX idx_jobs_start_date    ON jobs (start_date);
+CREATE INDEX idx_jobs_job_location  ON jobs USING GIST (job_location);
 
 CREATE TRIGGER trg_audit_jobs
     AFTER INSERT OR UPDATE OR DELETE ON jobs
@@ -315,6 +328,71 @@ CREATE INDEX idx_rams_vault_is_current ON rams_vault (is_current);
 CREATE TRIGGER trg_audit_rams_vault
     AFTER INSERT OR UPDATE OR DELETE ON rams_vault
     FOR EACH ROW EXECUTE FUNCTION fn_audit_trigger();
+
+-- =============================================================================
+-- Module 3: Compliance-status auto-maintenance trigger
+-- Keeps candidates.compliance_status (GREEN/AMBER/RED/PENDING) in sync
+-- whenever cert expiry dates or verification flags are updated.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION fn_refresh_compliance_status()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_cscs_ok  BOOLEAN;
+    v_nrswa_ok BOOLEAN;
+    v_expiring BOOLEAN;
+    v_new_status TEXT;
+BEGIN
+    -- CSCS check: status must be 'valid' and expiry must be in the future
+    v_cscs_ok := (
+        NEW.cscs_status = 'valid'
+        AND NEW.cscs_expiry_date IS NOT NULL
+        AND NEW.cscs_expiry_date >= CURRENT_DATE
+    );
+
+    -- NRSWA check: only enforced when nrswa_cert_number is present
+    v_nrswa_ok := (
+        NEW.nrswa_cert_number IS NULL
+        OR (
+            NEW.nrswa_status = 'valid'
+            AND NEW.nrswa_expiry_date IS NOT NULL
+            AND NEW.nrswa_expiry_date >= CURRENT_DATE
+        )
+    );
+
+    -- AMBER flag: any cert expiring within the next 30 days
+    v_expiring := (
+        (NEW.cscs_expiry_date IS NOT NULL
+            AND NEW.cscs_expiry_date < CURRENT_DATE + INTERVAL '30 days'
+            AND NEW.cscs_expiry_date >= CURRENT_DATE)
+        OR (NEW.nrswa_cert_number IS NOT NULL
+            AND NEW.nrswa_expiry_date IS NOT NULL
+            AND NEW.nrswa_expiry_date < CURRENT_DATE + INTERVAL '30 days'
+            AND NEW.nrswa_expiry_date >= CURRENT_DATE)
+    );
+
+    IF NOT v_cscs_ok OR NOT v_nrswa_ok THEN
+        v_new_status := 'RED';
+    ELSIF v_expiring THEN
+        v_new_status := 'AMBER';
+    ELSIF NEW.right_to_work = FALSE OR NEW.dbs_check_passed = FALSE THEN
+        v_new_status := 'AMBER';
+    ELSE
+        v_new_status := 'GREEN';
+    END IF;
+
+    NEW.compliance_status := v_new_status;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_refresh_compliance_status
+    BEFORE INSERT OR UPDATE
+    ON candidates
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_refresh_compliance_status();
 
 -- =============================================================================
 -- updated_at auto-maintenance trigger
