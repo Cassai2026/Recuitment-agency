@@ -27,15 +27,15 @@ POST /api/whatsapp-webhook
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
 import os
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Form, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 
 logger = logging.getLogger(__name__)
@@ -85,8 +85,6 @@ def _verify_twilio_signature(
         validation_string,
         hashlib.sha1,
     ).digest()
-
-    import base64
 
     expected = base64.b64encode(computed).decode("utf-8")
     return hmac.compare_digest(expected, signature)
@@ -169,12 +167,6 @@ async def _orchestrate_with_llm(
 )
 async def whatsapp_webhook(
     request: Request,
-    # Twilio POSTs these form fields
-    From: str = Form(...),
-    Body: str = Form(""),
-    NumMedia: int = Form(0),
-    MediaUrl0: str | None = Form(None),
-    MediaContentType0: str | None = Form(None),
     x_twilio_signature: str | None = Header(None, alias="x-twilio-signature"),
 ) -> PlainTextResponse:
     """
@@ -182,14 +174,27 @@ async def whatsapp_webhook(
 
     Flow
     ----
-    1. Verify Twilio HMAC-SHA1 signature (reject 403 on failure).
-    2. Read candidate's current conversation state from Redis.
-    3. Forward message + state to the LLM orchestration layer.
-    4. Persist updated state in Redis (TTL 24 h).
-    5. Return TwiML reply — optionally asking for a CSCS card photo.
+    1. Parse raw form data once (used for both signature verification and field extraction).
+    2. Verify Twilio HMAC-SHA1 signature (reject 403 on failure).
+    3. Read candidate's current conversation state from Redis.
+    4. Forward message + state to the LLM orchestration layer.
+    5. Persist updated state in Redis (TTL 24 h).
+    6. Return TwiML reply — optionally asking for a CSCS card photo.
     """
     # ------------------------------------------------------------------
-    # 1. Signature verification
+    # 1. Parse form data exactly once — used for both signature verification
+    #    and field extraction, avoiding any double-read of the request body.
+    # ------------------------------------------------------------------
+    raw_form_data = await request.form()
+    raw_form: dict[str, str] = {k: str(v) for k, v in raw_form_data.items()}
+
+    From: str = raw_form.get("From", "")
+    Body: str = raw_form.get("Body", "")
+    num_media: int = int(raw_form.get("NumMedia", "0"))
+    media_url_0: str | None = raw_form.get("MediaUrl0")
+
+    # ------------------------------------------------------------------
+    # 2. Signature verification
     # ------------------------------------------------------------------
     if TWILIO_AUTH_TOKEN:
         if not x_twilio_signature:
@@ -200,11 +205,6 @@ async def whatsapp_webhook(
 
         # Reconstruct the full URL Twilio signed
         webhook_url = str(request.url)
-
-        # Collect raw POST form data for signature validation
-        raw_form: dict[str, str] = {
-            k: v for k, v in (await request.form()).items()
-        }
 
         if not _verify_twilio_signature(
             TWILIO_AUTH_TOKEN,
@@ -226,16 +226,16 @@ async def whatsapp_webhook(
         )
 
     # ------------------------------------------------------------------
-    # 2. Retrieve conversation state from Redis
+    # 3. Retrieve conversation state from Redis
     # ------------------------------------------------------------------
     redis = request.app.state.redis
     state_key = f"whatsapp:state:{From}"
     conversation_state: str | None = await redis.get(state_key)
 
     # ------------------------------------------------------------------
-    # 3. LLM orchestration
+    # 4. LLM orchestration
     # ------------------------------------------------------------------
-    media_url = MediaUrl0 if NumMedia > 0 else None
+    media_url = media_url_0 if num_media > 0 else None
 
     llm_result = await _orchestrate_with_llm(
         from_number=From,
@@ -249,7 +249,7 @@ async def whatsapp_webhook(
     request_photo: bool = llm_result.get("request_photo", False)
 
     # ------------------------------------------------------------------
-    # 4. Persist updated state in Redis (24 h TTL)
+    # 5. Persist updated state in Redis (24 h TTL)
     # ------------------------------------------------------------------
     if next_state:
         await redis.setex(state_key, 86400, next_state)
@@ -258,7 +258,7 @@ async def whatsapp_webhook(
         await redis.delete(state_key)
 
     # ------------------------------------------------------------------
-    # 5. Build TwiML response
+    # 6. Build TwiML response
     # ------------------------------------------------------------------
     if request_photo and _STATE_AWAITING_CSCS in (next_state or ""):
         # Append a clear photo-upload prompt to whatever the LLM replied

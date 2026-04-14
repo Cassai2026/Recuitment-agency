@@ -477,12 +477,8 @@ def generate_rams_pdf(data: dict[str, Any]) -> Path:
     page_width = A4[0] - 4 * cm  # usable width
 
     # ------ Header banner ------------------------------------------------
-    header_data = [[
-        Paragraph(f"RISK ASSESSMENT & METHOD STATEMENT", styles["doc_title"]),
-        Paragraph(rams_ref, styles["doc_subtitle"]),
-    ]]
     header_table = Table(
-        [[Paragraph(f"RISK ASSESSMENT &amp; METHOD STATEMENT", styles["doc_title"]),
+        [[Paragraph("RISK ASSESSMENT &amp; METHOD STATEMENT", styles["doc_title"]),
           Paragraph(rams_ref, styles["doc_subtitle"])]],
         colWidths=[page_width * 0.7, page_width * 0.3],
     )

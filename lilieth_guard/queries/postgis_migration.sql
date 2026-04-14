@@ -20,8 +20,13 @@ CREATE EXTENSION IF NOT EXISTS postgis_topology;
 --   RED    = expired, missing, or flagged
 ALTER TABLE candidates
     ADD COLUMN IF NOT EXISTS location          geometry(Point, 4326),
-    ADD COLUMN IF NOT EXISTS compliance_status TEXT NOT NULL DEFAULT 'PENDING'
-        CHECK (compliance_status IN ('GREEN', 'AMBER', 'RED', 'PENDING'));
+    ADD COLUMN IF NOT EXISTS compliance_status TEXT NOT NULL DEFAULT 'PENDING';
+
+-- Add the CHECK constraint separately for full PostgreSQL version compatibility
+ALTER TABLE candidates
+    ADD CONSTRAINT chk_compliance_status_migration
+        CHECK (compliance_status IN ('GREEN', 'AMBER', 'RED', 'PENDING'))
+    NOT VALID;  -- NOT VALID skips the table scan on existing rows; validate later
 
 -- ---------------------------------------------------------------------------
 -- Add spatial column to jobs

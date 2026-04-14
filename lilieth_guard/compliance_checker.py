@@ -272,10 +272,13 @@ async def check_compliance_card(image_url: str) -> dict[str, Any]:
     found_nrswa = bool(_RE_NRSWA.search(raw_text))
 
     if found_cscs and found_nrswa:
-        # Prefer whichever keyword appears first (primary document type)
-        cscs_pos = (_RE_CSCS.search(raw_text) or re.search("", "")).start()
-        nrswa_pos = (_RE_NRSWA.search(raw_text) or re.search("", "")).start()
-        card_type = "CSCS" if cscs_pos <= nrswa_pos else "NRSWA"
+        # Prefer whichever keyword appears first (primary document type).
+        # Both searches are guaranteed to succeed since found_cscs and
+        # found_nrswa are already confirmed True above.
+        cscs_match = _RE_CSCS.search(raw_text)
+        nrswa_match = _RE_NRSWA.search(raw_text)
+        assert cscs_match is not None and nrswa_match is not None  # invariant
+        card_type = "CSCS" if cscs_match.start() <= nrswa_match.start() else "NRSWA"
     elif found_cscs:
         card_type = "CSCS"
     elif found_nrswa:
