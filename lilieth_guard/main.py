@@ -18,6 +18,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from routers import whatsapp
+
 
 # ---------------------------------------------------------------------------
 # Lifespan — startup / shutdown hooks
@@ -71,6 +73,13 @@ async def info() -> JSONResponse:
         "modules": ["recruitment", "property_pressure"],
         "version": "1.0.0",
     })
+
+
+# ---------------------------------------------------------------------------
+# Module 1 — The Intake: WhatsApp webhook
+# ---------------------------------------------------------------------------
+
+app.include_router(whatsapp.router)
 
 
 # ---------------------------------------------------------------------------
